@@ -1,4 +1,9 @@
 import asyncio
+
+# Python 3.12 Fix: Must create and set event loop before importing Pyrogram
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
 import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -19,15 +24,8 @@ def run_port():
 
 threading.Thread(target=run_port, daemon=True).start()
 
-# Event Loop Fix for Python 3.12+
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-# Telegram Bot Client Setup
-api_id = int(os.environ.get("API_ID", 21567814))
+# Credentials
+api_id = int(os.environ.get("API_ID", "21567814"))
 api_hash = os.environ.get("API_HASH", "cd7dc5431d449fd795683c550d7bfb7e")
 bot_token = os.environ.get("BOT_TOKEN", "8078418472:AAHN8O2dz1uLZX2D9g3URDT1ic6W7IX0Fb4")
 
@@ -42,4 +40,5 @@ bot = Client(
 async def start_cmd(client: Client, message: Message):
     await message.reply_text("👋 Welcome to Classplus Extractor Bot!")
 
-bot.run()
+if __name__ == "__main__":
+    bot.run()
