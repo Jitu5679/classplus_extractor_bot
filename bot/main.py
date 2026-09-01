@@ -1,21 +1,19 @@
-import asyncio
-
-# Python 3.12 Fix: Must create and set event loop before importing Pyrogram
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-
 import os
+import re
+import asyncio
+import aiohttp
+import logging
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 # Render Port Binding
 class SimpleServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is Live!")
+        self.wfile.write(b"Bot is Live & Running!")
 
 def run_port():
     port = int(os.environ.get("PORT", 8080))
@@ -24,21 +22,170 @@ def run_port():
 
 threading.Thread(target=run_port, daemon=True).start()
 
-# Credentials
-api_id = int(os.environ.get("API_ID", "21567814"))
-api_hash = os.environ.get("API_HASH", "cd7dc5431d449fd795683c550d7bfb7e")
-bot_token = os.environ.get("BOT_TOKEN", "8078418472:AAHN8O2dz1uLZX2D9g3URDT1ic6W7IX0Fb4")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+API_ID = int(os.environ.get("API_ID", "21567814"))
+API_HASH = os.environ.get("API_HASH", "cd7dc5431d449fd795683c550d7bfb7e")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8078418472:AAHN8O2dz1uLZX2D9g3URDT1ic6W7IX0Fb4")
+
+os.makedirs("downloads", exist_ok=True)
 
 bot = Client(
-    "classplus_bot",
-    api_id=api_id,
-    api_hash=api_hash,
-    bot_token=bot_token
+    "classplus_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
 )
 
-@bot.on_message(filters.command("start"))
+user_states = {}
+
+HEADERS = {
+    "User-Agent": "Mobile-Android",
+    "Accept": "application/json, text/plain, */*",
+    "region": "IN"
+}
+
+@bot.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
-    await message.reply_text("👋 Welcome to Classplus Extractor Bot!")
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 Concept RNA (Direct OTP Download) 📱", callback_data="cp_otp_mode")]
+    ])
+    await message.reply_text(
+        f"👋 **Namaste {message.from_user.first_name}!**\n\nNeeche diye gaye button par click karein:",
+        reply_markup=markup
+    )
+
+@bot.on_callback_query()
+async def callback_handler(client: Client, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    if query.data == "cp_otp_mode":
+        user_states[chat_id] = {"step": "ASK_PHONE", "org_code": "nbhom", "course_id": "756679"}
+        await query.message.reply_text(
+            "📱 **Apna 10-digit Mobile Number bhejein** (jis par Concept RNA account hai):"
+        )
+        await query.answer()
+
+@bot.on_message(filters.text & filters.private)
+async def text_handler(client: Client, message: Message):
+    chat_id = message.chat.id
+    state = user_states.get(chat_id, {})
+    step = state.get("step")
+
+    if step == "ASK_PHONE":
+        phone = message.text.strip().replace("+91", "").replace(" ", "")
+        if not re.match(r'^\d{10}$', phone):
+            await message.reply_text("❌ Kripya 10 digit ka valid mobile number bhejein.")
+            return
+
+        state["phone"] = phone
+        state["step"] = "WAITING_OTP"
+        status_msg = await message.reply_text("⏳ OTP bheja ja raha hai...")
+
+        url = "https://api.classplusapp.com/v2/otp/generate"
+        payload = {"mobile": phone, "orgCode": state["org_code"]}
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(url, json=payload, headers=HEADERS, timeout=15) as resp:
+                    data = await resp.json(content_type=None)
+                    if resp.status == 200 and data.get("status") == "success":
+                        state["session_id"] = data.get("data", {}).get("sessionId")
+                        await status_msg.edit_text("✅ OTP aapke number par bhej diya gaya hai!\n\n🔢 **OTP yahan bhejein:**")
+                    else:
+                        msg = data.get("message", "OTP request fail ho gayi.")
+                        await status_msg.edit_text(f"❌ Error: {msg}")
+            except Exception as e:
+                await status_msg.edit_text(f"❌ Connection error: {e}")
+
+    elif step == "WAITING_OTP":
+        otp = message.text.strip()
+        session_id = state.get("session_id")
+        org_code = state.get("org_code", "nbhom")
+        course_id = state.get("course_id", "756679")
+        phone = state.get("phone")
+
+        status_msg = await message.reply_text("⏳ OTP verify kiya ja raha hai...")
+
+        url = "https://api.classplusapp.com/v2/users/verify"
+        payload = {
+            "mobile": phone,
+            "otp": otp,
+            "sessionId": session_id,
+            "orgCode": org_code
+        }
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(url, json=payload, headers=HEADERS, timeout=15) as resp:
+                    data = await resp.json(content_type=None)
+                    if resp.status != 200 or data.get("status") != "success":
+                        msg = data.get("message", "Galat OTP ya verification failed.")
+                        await status_msg.edit_text(f"❌ Error: {msg}")
+                        return
+
+                    token = data.get("data", {}).get("token")
+            except Exception as e:
+                await status_msg.edit_text(f"❌ Login error: {e}")
+                return
+
+            await status_msg.edit_text("✅ Login ho gaya! Course scanning start ho chuki hai...")
+
+            auth_headers = {
+                "x-access-token": token,
+                "User-Agent": "Mobile-Android",
+                "accept": "application/json",
+                "region": "IN"
+            }
+
+            extracted_items = []
+            queue = [(0, "Root")]
+            visited_folders = set()
+
+            while queue:
+                current_folder_id, path = queue.pop(0)
+                if current_folder_id in visited_folders:
+                    continue
+                visited_folders.add(current_folder_id)
+
+                content_url = f"https://api.classplusapp.com/v2/course/content/get?courseId={course_id}&folderId={current_folder_id}"
+                try:
+                    async with session.get(content_url, headers=auth_headers, timeout=15) as c_resp:
+                        if c_resp.status == 200:
+                            c_data = await c_resp.json(content_type=None)
+                            contents = c_data.get("data", {}).get("courseContent", [])
+                            for item in contents:
+                                item_type = item.get("contentType")
+                                item_name = item.get("name", "Untitled")
+
+                                if item_type == 1:
+                                    sub_id = item.get("id")
+                                    queue.append((sub_id, f"{path} > {item_name}"))
+                                elif item_type == 2:
+                                    v_url = item.get("url") or item.get("streamUrl") or item.get("videoUrl", "")
+                                    extracted_items.append(f"📹 {item_name} : {v_url}")
+                                elif item_type == 3:
+                                    d_url = item.get("url") or item.get("documentUrl", "")
+                                    extracted_items.append(f"📄 {item_name} : {d_url}")
+                except Exception as err:
+                    logging.error(f"Folder fetch error: {err}")
+
+            if not extracted_items:
+                await status_msg.edit_text("❌ Course khali mila ya content access nahi hua.")
+                return
+
+            file_path = f"downloads/ConceptRNA_{course_id}.txt"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(f"--- Concept RNA Batch ({course_id}) ---\n\n")
+                for line in extracted_items:
+                    f.write(line + "\n")
+
+            await status_msg.edit_text(f"✅ Extraction complete! Total {len(extracted_items)} files mili.")
+            await client.send_document(
+                chat_id,
+                file_path,
+                caption=f"📚 **Course ID:** `{course_id}`\n✨ **Total Links:** {len(extracted_items)}"
+            )
 
 if __name__ == "__main__":
     bot.run()
+                        
